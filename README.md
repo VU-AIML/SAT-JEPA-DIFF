@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 <p align="center">
-  <img src="docs/architecture.png" width="100%" alt="Sat-JEPA-Diff Architecture" style="background-color: white; padding: 10px;"/>
+  <img src="docs/ijepa_diagram_white_bg.png" width="100%" alt="Sat-JEPA-Diff Architecture" style="background-color: white; padding: 10px;"/>
 </p>
 
 Sat-JEPA-Diff predicts future satellite images by first forecasting **what** will be there (semantic embeddings via IJEPA), then generating **how** it looks (RGB imagery via Stable Diffusion 3.5). This two-stage approach produces sharp, realistic predictions that preserve roads, buildings, and vegetation boundaries — details that traditional methods blur away.
