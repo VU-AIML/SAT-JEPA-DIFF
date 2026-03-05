@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 <p align="center">
-  <img src="docs/ijepa_diagram.png" width="100%" alt="Sat-JEPA-Diff Architecture"/>
+  <img src="docs/ijepa_diagram.pdf" width="100%" alt="Sat-JEPA-Diff Architecture"/>
 </p>
 
 Sat-JEPA-Diff predicts future satellite images by first forecasting **what** will be there (semantic embeddings via IJEPA), then generating **how** it looks (RGB imagery via Stable Diffusion 3.5). This two-stage approach produces sharp, realistic predictions that preserve roads, buildings, and vegetation boundaries — details that traditional methods blur away.
@@ -198,7 +198,7 @@ src/
 ```bibtex
 @inproceedings{komurcu2026satjepadiff,
   title={Sat-JEPA-Diff: Bridging Self-Supervised Learning and Generative Diffusion for Remote Sensing},
-  author={Kömürcü Kürşat and Petkevi{\v{c}}ius, Linas},
+  author={Kömürcü Kürşat and Petkevicius, Linas},
   booktitle={ICLR 2026 Machine Learning for Remote Sensing (ML4RS) Workshop},
   year={2026}
 }
