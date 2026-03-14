@@ -196,11 +196,13 @@ src/
 ## Citation
 
 ```bibtex
-@inproceedings{komurcu2026satjepadiff,
-  title={Sat-JEPA-Diff: Bridging Self-Supervised Learning and Generative Diffusion for Remote Sensing},
-  author={Kömürcü Kürşat and Petkevicius, Linas},
-  booktitle={ICLR 2026 Machine Learning for Remote Sensing (ML4RS) Workshop},
-  year={2026}
+@inproceedings{
+komurcu2026satjepadiff,
+title={Sat-{JEPA}-Diff: Bridging Self-Supervised Learning and Generative Diffusion for Remote Sensing},
+author={Kursat Komurcu and Linas Petkevicius},
+booktitle={4th ICLR Workshop on Machine Learning for Remote Sensing (Main Track)},
+year={2026},
+url={https://openreview.net/forum?id=WBHfQLbgZR}
 }
 ```
 
