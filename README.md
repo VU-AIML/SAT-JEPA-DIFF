@@ -5,7 +5,9 @@
 *Accepted at ICLR 2026 — Machine Learning for Remote Sensing (ML4RS) Workshop*
 
 [![Paper](https://img.shields.io/badge/Paper-ICLR%202026-blue)](https://openreview.net)
+[![HF Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-yellow)](https://huggingface.co/kursatkomurcu/SAT-JEPA-DIFF)
 [![Dataset & Model](https://img.shields.io/badge/Zenodo-Dataset%20%26%20Model-orange)](https://doi.org/10.5281/zenodo.18868643)
+[![HF Dataset](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Dataset-yellow)](https://huggingface.co/datasets/kursatkomurcu/Global-Spatiotemporal-Sentinel-2-Dataset-with-Pre-computed-GEE-Embeddings-2017-2024)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 <p align="center">
