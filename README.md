@@ -1,5 +1,7 @@
 # Sat-JEPA-Diff
 
+To see our caption gudided "Sat-JEPA-Diff: Caption-Guided Zero-RGB Satellite Image Forecasting via Self-Supervised Diffusion" which is under review, please visit **caption_guided** branch.
+
 **Bridging Self-Supervised Learning and Generative Diffusion for Satellite Image Forecasting**
 
 *Accepted at ICLR 2026 — Machine Learning for Remote Sensing (ML4RS) Workshop*
