@@ -12,7 +12,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 <p align="center">
-  <img src="docs/ijepa_diagram_white_bg.png" width="100%" alt="Zero-RGB Sat-JEPA-Diff Architecture"/>
+  <img src="docs/ijepa_diagram_new_white_bg.png" width="100%" alt="Zero-RGB Sat-JEPA-Diff Architecture"/>
 </p>
 
 > **This branch** implements the Caption-Guided Zero-RGB extension. For the original coarse-RGB version (ICLR 2026 ML4RS Workshop), see the [`main`](https://github.com/VU-AIML/SAT-JEPA-DIFF/tree/main) branch.
