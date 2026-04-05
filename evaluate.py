@@ -1,8 +1,14 @@
 """
 Evaluate Custom IJEPA + Stable Diffusion Model (VRAM Optimized)
 
-This script loads a trained hybrid model (IJEPA + SD Adapter) and evaluates it on the validation set.
-It calculates standard metrics (PSNR, SSIM, MSE, L1) and advanced perceptual metrics (FID, LPIPS).
+This script loads a trained hybrid model (IJEPA + SD Adapter + Caption Forecaster)
+and evaluates it on the validation set.
+
+Architecture:
+- IJEPA encoder predicts visual tokens at t+1
+- CaptionForecaster predicts semantic caption at t+1
+- SD3.5 conditioned on: informative(t) + geometric(t) + semantic(t+1) + IJEPA tokens
+- No coarse RGB — pure embedding + caption conditioning
 """
 
 import os
@@ -18,8 +24,11 @@ from tqdm import tqdm
 
 # Import local modules
 from helper import init_model
-from sd_models import load_sd_model
+from sd_models import (
+    load_sd_model, encode_caption_batch,
+)
 from sd_joint_loss import diffusion_sample
+from caption_forecaster import CaptionForecaster
 from data.data import S2FutureEmbeddingDataset
 
 # Try importing advanced metric libraries
@@ -52,7 +61,6 @@ def gaussian_kernel(size=11, sigma=1.5, channels=3, device=None):
 
 def compute_ssim(img1: torch.Tensor, img2: torch.Tensor, window_size=11) -> float:
     """Calculates Structural Similarity Index (SSIM)."""
-    # Metrics calculation should be in float32 for accuracy
     img1 = img1.float()
     img2 = img2.float()
     
@@ -143,18 +151,90 @@ def compute_metrics_batch(pred: torch.Tensor, target: torch.Tensor) -> dict:
         "gssim": compute_gssim(pred, target),
     }
 
+
+# ============================================================================
+# Utility Functions (from train.py)
+# ============================================================================
+
+def embedding_to_patches(embs, patch_size):
+    """Convert embedding maps to patch tokens."""
+    B, C, H, W = embs.shape
+    Hp, Wp = H // patch_size, W // patch_size
+    embs = embs.view(B, C, Hp, patch_size, Wp, patch_size)
+    embs = embs.mean(dim=(3, 5))
+    embs = embs.permute(0, 2, 3, 1).reshape(B, Hp * Wp, C)
+    return embs
+
+
+# ============================================================================
+# Custom Collate for Caption-Aware Evaluation
+# ============================================================================
+
+def make_eval_caption_collate(dataset_ref=None):
+    """
+    Custom collate for evaluation with captions.
+    Dataset returns 6-tuple: (rgb_t, emb_tp1, rgb_tp1, meta, cap_emb_t, cap_emb_tp1)
+    """
+    def collate_fn(batch):
+        rgb_t = torch.stack([item[0] for item in batch])
+        emb_tp1 = torch.stack([item[1] for item in batch])
+        rgb_tp1 = torch.stack([item[2] for item in batch])
+
+        # Extract captions from meta dicts
+        metas = [item[3] for item in batch]
+        captions_t = {"informative": [], "geometric": [], "semantic": []}
+        captions_tp1 = {"informative": [], "geometric": [], "semantic": []}
+        for m in metas:
+            ct = m.get("captions_t", {"informative": "", "geometric": "", "semantic": ""})
+            ctp1 = m.get("captions_tp1", {"informative": "", "geometric": "", "semantic": ""})
+            for k in ["informative", "geometric", "semantic"]:
+                captions_t[k].append(ct.get(k, ""))
+                captions_tp1[k].append(ctp1.get(k, ""))
+
+        # Stack precomputed caption embeddings
+        cap_emb_t = None
+        cap_emb_tp1 = None
+        emb_list_t = [item[4] for item in batch]
+        emb_list_tp1 = [item[5] for item in batch]
+        if emb_list_t[0] is not None:
+            try:
+                cap_emb_t = {k: torch.stack([e[k] for e in emb_list_t]) for k in emb_list_t[0].keys()}
+            except Exception:
+                cap_emb_t = None
+        if emb_list_tp1[0] is not None:
+            try:
+                cap_emb_tp1 = {k: torch.stack([e[k] for e in emb_list_tp1]) for k in emb_list_tp1[0].keys()}
+            except Exception:
+                cap_emb_tp1 = None
+
+        return rgb_t, emb_tp1, rgb_tp1, captions_t, captions_tp1, cap_emb_t, cap_emb_tp1
+
+    return collate_fn
+
+
+def make_eval_simple_collate():
+    """Simple collate for evaluation without captions."""
+    def collate_fn(batch):
+        rgb_t = torch.stack([item[0] for item in batch])
+        emb_tp1 = torch.stack([item[1] for item in batch])
+        rgb_tp1 = torch.stack([item[2] for item in batch])
+        return rgb_t, emb_tp1, rgb_tp1, None, None, None, None
+
+    return collate_fn
+
+
 # ============================================================================
 # Model Loading
 # ============================================================================
 
 def load_full_model_for_eval(checkpoint_path: str, device: torch.device):
     """
-    Loads the full IJEPA + SD model state from the checkpoint.
+    Loads the full IJEPA + SD + CaptionForecaster model state from checkpoint.
+    Compatible with the new multi-caption architecture.
     """
     print(f"Loading checkpoint from: {checkpoint_path}")
-    torch.cuda.empty_cache() # Clear cache before loading
+    torch.cuda.empty_cache()
     
-    # Load with weights_only=False to allow loading the config dictionary
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
     # 1. Recover Configuration
@@ -173,6 +253,10 @@ def load_full_model_for_eval(checkpoint_path: str, device: torch.device):
     use_lora = config["meta"].get("use_lora", True)
     lora_rank = int(config["meta"].get("lora_rank", 16))
     lora_alpha = int(config["meta"].get("lora_alpha", 32))
+    use_captions = config["meta"].get("use_captions", True)
+    caption_forecaster_layers = int(config["meta"].get("caption_forecaster_layers", 3))
+    caption_forecaster_hidden = int(config["meta"].get("caption_forecaster_hidden", 1024))
+    target_emb_dim = config["meta"].get("target_emb_dim", 64)
     
     # 2. Initialize IJEPA
     print("Initializing IJEPA...")
@@ -189,34 +273,55 @@ def load_full_model_for_eval(checkpoint_path: str, device: torch.device):
     if hasattr(encoder, "embed_dim"):
         encoder_embed_dim = encoder.embed_dim
     else:
-        encoder_embed_dim = 1280 # Fallback
+        encoder_embed_dim = 1280  # Fallback
+    
+    # Projection head (encoder_embed_dim -> target_emb_dim)
+    proj_head = torch.nn.Linear(encoder_embed_dim, target_emb_dim).to(device)
+    print(f"proj_head: {encoder_embed_dim} -> {target_emb_dim}")
     
     # 3. Initialize Stable Diffusion
-    print(f"Initializing Stable Diffusion (Target Dim: {encoder_embed_dim})...")
+    print(f"Initializing Stable Diffusion (IJEPA Dim: {encoder_embed_dim})...")
     
-    # FIX: Use bfloat16 or float16 to save memory (avoid OOM)
-    # Most modern GPUs support bfloat16, fallback to float16 if needed.
     eval_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     print(f"Using dtype for SD: {eval_dtype}")
+    
+    # Check if precomputed embeddings exist — if so, skip text encoders
+    caption_dir = config["meta"].get("caption_dir", None)
+    _has_precomputed = caption_dir and os.path.isdir(
+        os.path.join(caption_dir, "caption_embeddings")
+    )
+    _load_text_enc = use_captions and not _has_precomputed
+    if _has_precomputed:
+        print("[VRAM] Precomputed embeddings found — skipping text encoder loading")
     
     sd_state = load_sd_model(
         device=device,
         checkpoint_dir=config["meta"].get("sd_checkpoint_dir", "./sd_finetuned"),
-        dtype=eval_dtype, 
+        dtype=eval_dtype,
         use_lora=use_lora,
         lora_rank=lora_rank,
         lora_alpha=lora_alpha,
-        target_emb_dim=encoder_embed_dim
+        target_emb_dim=encoder_embed_dim,
+        hf_token=config["meta"].get("hf_token", None),
+        load_text_encoders=_load_text_enc,
     )
     
-    # VAE can stay in float32 for stability if needed, or cast to eval_dtype for memory
-    # SD 3.5 VAE is robust, let's keep it float32 only if we have issues, otherwise eval_dtype
+    # Keep VAE in float32 for stability
     if "vae" in sd_state:
-        # Keeping VAE in float32 is safer for decoding without NaN, 
-        # but if OOM persists, change this to eval_dtype
         sd_state["vae"] = sd_state["vae"].to(dtype=torch.float32)
-
-    # 4. Load State Dicts
+    
+    # 4. Initialize Caption Forecaster
+    caption_forecaster = None
+    if use_captions:
+        print("Initializing Caption Forecaster...")
+        caption_forecaster = CaptionForecaster(
+            ijepa_dim=encoder_embed_dim,
+            text_dim=4096,  # T5 hidden dim
+            hidden_dim=caption_forecaster_hidden,
+            num_layers=caption_forecaster_layers,
+        ).to(device)
+    
+    # 5. Load State Dicts
     print("Loading weights...")
     
     # Load IJEPA weights
@@ -224,29 +329,58 @@ def load_full_model_for_eval(checkpoint_path: str, device: torch.device):
         encoder.load_state_dict(checkpoint["encoder"])
     if "predictor" in checkpoint:
         predictor.load_state_dict(checkpoint["predictor"])
-        
+    
+    # Load projection head
+    if "proj_head" in checkpoint:
+        proj_head.load_state_dict(checkpoint["proj_head"])
+    
     # Load SD Trainable Params (LoRA + Adapter)
-    if "sd_state" in checkpoint:
-        # Load Adapter
-        if "cond_adapter" in sd_state and "cond_adapter" in checkpoint:
-             sd_state["cond_adapter"].load_state_dict(checkpoint["cond_adapter"])
-             
-        # Load UNet (LoRA)
-        if "unet" in checkpoint:
-            sd_state["unet"].load_state_dict(checkpoint["unet"])
-        elif "unet_lora" in checkpoint:
-             sd_state["unet"].load_state_dict(checkpoint["unet_lora"], strict=False)
-
+    unet_dtype = next(sd_state["unet"].parameters()).dtype
+    
+    if "cond_adapter" in checkpoint:
+        try:
+            sd_state["cond_adapter"].load_state_dict(checkpoint["cond_adapter"])
+        except RuntimeError as e:
+            print(f"[Warning] Adapter size mismatch, re-initializing. Details: {e}")
+        sd_state["cond_adapter"].to(dtype=unet_dtype)
+    
+    # Load LoRA weights
+    if checkpoint.get("use_lora") and "lora_state_dict" in checkpoint:
+        sd_state["unet"].load_state_dict(checkpoint["lora_state_dict"], strict=False)
+    elif "unet" in checkpoint:
+        sd_state["unet"].load_state_dict(checkpoint["unet"], strict=False)
+    elif "unet_lora" in checkpoint:
+        sd_state["unet"].load_state_dict(checkpoint["unet_lora"], strict=False)
+    
+    # Load prompt embeds from checkpoint
+    if "prompt_embeds" in checkpoint:
+        sd_state["prompt_embeds"] = checkpoint["prompt_embeds"].to(device=device, dtype=unet_dtype)
+        sd_state["pooled_prompt_embeds"] = checkpoint["pooled_prompt_embeds"].to(device=device, dtype=unet_dtype)
+    
+    # Load caption forecaster
+    if caption_forecaster is not None and "caption_forecaster" in checkpoint:
+        caption_forecaster.load_state_dict(checkpoint["caption_forecaster"])
+        print("Caption Forecaster weights loaded.")
+    
+    # Set eval mode
     encoder.to(device).eval()
     predictor.to(device).eval()
+    proj_head.to(device).eval()
+    sd_state["cond_adapter"].eval()
+    if caption_forecaster is not None:
+        caption_forecaster.to(device).eval()
     
-    # Convert IJEPA to eval_dtype as well to save memory and match SD
+    # Convert IJEPA + proj_head to eval_dtype to save memory
     encoder.to(dtype=eval_dtype)
     predictor.to(dtype=eval_dtype)
+    proj_head.to(dtype=eval_dtype)
+    if caption_forecaster is not None:
+        caption_forecaster.to(dtype=eval_dtype)
     
-    torch.cuda.empty_cache() # Cleanup after loading
+    torch.cuda.empty_cache()
     
-    return encoder, predictor, sd_state, config, eval_dtype
+    return encoder, predictor, proj_head, sd_state, caption_forecaster, config, eval_dtype
+
 
 # ============================================================================
 # Main Evaluation Function
@@ -259,18 +393,31 @@ def evaluate(
     device: str = "cuda",
     num_samples: int = 1000,
     diffusion_steps: int = 50,
+    caption_dir: str = None,
 ):
     """
-    Main evaluation loop.
+    Main evaluation loop with multi-caption conditioning support.
     """
     device = torch.device(device if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # 1. Load Model (with memory optimization)
-    encoder, predictor, sd_state, config, eval_dtype = load_full_model_for_eval(checkpoint_path, device)
+    # 1. Load Model
+    (encoder, predictor, proj_head, sd_state, caption_forecaster,
+     config, eval_dtype) = load_full_model_for_eval(checkpoint_path, device)
+    
+    # Extract config
+    crop_size = config["data"]["crop_size"]
+    patch_size = config["mask"]["patch_size"]
+    use_captions = config["meta"].get("use_captions", True)
+    use_bfloat16 = config["meta"].get("use_bfloat16", True)
+    
+    # Override caption_dir from args if provided
+    if caption_dir is None:
+        caption_dir = config["meta"].get("caption_dir", None)
+    
+    unet_dtype = next(sd_state["unet"].parameters()).dtype
     
     # 2. Setup Metrics
-    # LPIPS and FID usually expect float32 inputs, we will handle casting during the loop.
     lpips_fn = None
     if LPIPS_AVAILABLE:
         print("Initializing LPIPS (VGG)...")
@@ -280,37 +427,42 @@ def evaluate(
     fid_metric = None
     if FID_AVAILABLE:
         print("Initializing FID (InceptionV3)...")
-        # feature=64 is faster
         fid_metric = FrechetInceptionDistance(feature=64, normalize=True).to(device)
     
     # 3. Load Data
     print("Loading dataset...")
-    crop_size = config["data"]["crop_size"]
-    patch_size = config["mask"]["patch_size"]
     
-    # Use the same dataset class as training
     dataset = S2FutureEmbeddingDataset(
         root_dir=root_dir,
         patch_size=crop_size,
         transform=None,
+        caption_dir=caption_dir if use_captions else None,
     )
     
-    # Create validation split 
+    # Create validation split
     total_len = len(dataset)
     val_indices = list(range(int(0.8 * total_len), total_len))
     val_dataset = Subset(dataset, val_indices)
+    
+    # Choose collate function based on caption support
+    if use_captions:
+        collate_fn = make_eval_caption_collate()
+    else:
+        collate_fn = make_eval_simple_collate()
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=4,
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=collate_fn,
     )
     
     print(f"Validation samples: {len(val_dataset)}")
     print(f"Evaluation limit: {num_samples} samples")
     print(f"Diffusion Steps: {diffusion_steps}")
+    print(f"Captions enabled: {use_captions}")
     
     # 4. Evaluation Loop
     total_metrics = {
@@ -318,23 +470,22 @@ def evaluate(
     }
     num_evaluated = 0
     
-    # Helper for full masks
     num_patches = (crop_size // patch_size) ** 2
     
     print("Starting evaluation...")
     with torch.no_grad():
-        # Use autocast to handle mixed precision efficiently
         with torch.amp.autocast("cuda", dtype=eval_dtype):
             for batch_data in tqdm(val_loader, desc="Generating"):
                 if num_evaluated >= num_samples:
                     break
                 
-                if isinstance(batch_data, list):
-                     imgs_t = batch_data[0].to(device)
-                     rgb_tp1 = batch_data[2].to(device)
-                else:
-                     imgs_t = batch_data[0].to(device)
-                     rgb_tp1 = batch_data[2].to(device)
+                # Unpack batch (unified 7-tuple format)
+                (imgs_t, embs_tp1, rgb_tp1,
+                 captions_t, captions_tp1,
+                 cap_emb_t, cap_emb_tp1) = batch_data
+                
+                imgs_t = imgs_t.to(device)
+                rgb_tp1 = rgb_tp1.to(device)
 
                 B = imgs_t.size(0)
                 
@@ -346,28 +497,68 @@ def evaluate(
                 # --- Inference Step ---
                 
                 # 1. IJEPA (latent generation)
-                # Ensure input is in correct dtype
                 z_enc = encoder(imgs_t.to(dtype=eval_dtype), full_mask)
                 z_raw = predictor(z_enc, full_mask, full_mask)
                 z_raw_norm = F.layer_norm(z_raw, (z_raw.size(-1),))
                 
-                # 2. Stable Diffusion Generation
-                # Pass tensors in correct dtype. diffusion_sample handles VAE casting internally.
+                # 2. Prepare caption conditioning
+                info_h, info_p = None, None
+                geo_h, geo_p = None, None
+                sem_h, sem_p = None, None
+                
+                if use_captions:
+                    # Priority: precomputed embeddings > runtime encoding > fallback
+                    if cap_emb_t is not None:
+                        # Fast path: precomputed embeddings
+                        info_h = cap_emb_t["informative_hidden"].to(device=device, dtype=unet_dtype)
+                        info_p = cap_emb_t["informative_pooled"].to(device=device, dtype=unet_dtype)
+                        geo_h = cap_emb_t["geometric_hidden"].to(device=device, dtype=unet_dtype)
+                        geo_p = cap_emb_t["geometric_pooled"].to(device=device, dtype=unet_dtype)
+                        sem_t_h = cap_emb_t["semantic_hidden"].to(device=device, dtype=unet_dtype)
+                        sem_t_p = cap_emb_t["semantic_pooled"].to(device=device, dtype=unet_dtype)
+                    elif captions_t is not None and sd_state.get("caption_encoder") is not None:
+                        # Slow path: runtime text encoding
+                        cap_enc = sd_state["caption_encoder"]
+                        info_h, info_p = encode_caption_batch(
+                            cap_enc, captions_t["informative"], device, unet_dtype
+                        )
+                        geo_h, geo_p = encode_caption_batch(
+                            cap_enc, captions_t["geometric"], device, unet_dtype
+                        )
+                        sem_t_h, sem_t_p = encode_caption_batch(
+                            cap_enc, captions_t["semantic"], device, unet_dtype
+                        )
+                    else:
+                        sem_t_h, sem_t_p = None, None
+                    
+                    # Forecast semantic caption at t+1
+                    if caption_forecaster is not None and sem_t_h is not None:
+                        sem_h = caption_forecaster(z_raw_norm, sem_t_h)
+                        sem_p = sem_t_p
+                    else:
+                        sem_h = sem_t_h if 'sem_t_h' in dir() else None
+                        sem_p = sem_t_p if 'sem_t_p' in dir() else None
+                
+                # 3. Stable Diffusion Generation with multi-caption conditioning
                 rgb_pred = diffusion_sample(
                     unet=sd_state["unet"],
                     vae=sd_state["vae"],
                     scheduler=sd_state["noise_scheduler"],
                     cond_adapter=sd_state["cond_adapter"],
                     ijepa_tokens=z_raw_norm,
-                    text_embeds=sd_state.get("prompt_embeds"),
-                    pooled_text_embeds=sd_state.get("pooled_prompt_embeds"),
                     num_steps=diffusion_steps,
                     image_size=(crop_size, crop_size),
                     device=device,
-                    ref_rgb=imgs_t.to(dtype=torch.float32), # ref_rgb needs to be float32 for interpolation usually
+                    informative_hidden=info_h,
+                    informative_pooled=info_p,
+                    geometric_hidden=geo_h,
+                    geometric_pooled=geo_p,
+                    semantic_hidden=sem_h,
+                    semantic_pooled=sem_p,
+                    ref_rgb=imgs_t.to(dtype=torch.float32),
                 )
                 
-                # --- Metrics Calculation (Move to float32 for accuracy) ---
+                # --- Metrics Calculation (float32 for accuracy) ---
                 
                 rgb_gt = rgb_tp1.to(dtype=torch.float32).clamp(0, 1)
                 rgb_pred = rgb_pred.to(dtype=torch.float32).clamp(0, 1)
@@ -381,7 +572,6 @@ def evaluate(
                 
                 # LPIPS
                 if lpips_fn is not None:
-                    # Scale to [-1, 1]
                     pred_norm = (rgb_pred * 2.0) - 1.0
                     gt_norm = (rgb_gt * 2.0) - 1.0
                     batch_lpips = lpips_fn(pred_norm, gt_norm)
@@ -393,6 +583,10 @@ def evaluate(
                     fid_metric.update(rgb_pred, real=False)
                 
                 num_evaluated += current_batch_size
+                
+                # Free memory periodically
+                if num_evaluated % (batch_size * 10) == 0:
+                    torch.cuda.empty_cache()
             
     # 5. Finalize Results
     avg_metrics = {k: v / max(num_evaluated, 1) for k, v in total_metrics.items()}
@@ -409,6 +603,7 @@ def evaluate(
     print("="*40)
     print(f"Model: {checkpoint_path}")
     print(f"Samples evaluated: {num_evaluated}")
+    print(f"Captions: {'enabled' if use_captions else 'disabled'}")
     print("-" * 40)
     print(f"L1 Loss:      {avg_metrics['l1']:.4f}")
     print(f"MSE Loss:     {avg_metrics['mse']:.4f}")
@@ -438,12 +633,14 @@ def evaluate(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate Custom IJEPA-SD Model")
+    parser = argparse.ArgumentParser(description="Evaluate Custom IJEPA-SD Model (Multi-Caption)")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to best model checkpoint")
     parser.add_argument("--root_dir", type=str, default="downloads", help="Path to dataset")
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--num_samples", type=int, default=1000, help="Max samples to evaluate")
+    parser.add_argument("--num_samples", type=int, default=10000, help="Max samples to evaluate")
     parser.add_argument("--steps", type=int, default=50, help="Diffusion sampling steps")
+    parser.add_argument("--caption_dir", type=str, default=None,
+                        help="Path to caption directory (overrides config)")
     
     args = parser.parse_args()
     
@@ -452,5 +649,6 @@ if __name__ == "__main__":
         root_dir=args.root_dir,
         batch_size=args.batch_size,
         num_samples=args.num_samples,
-        diffusion_steps=args.steps
+        diffusion_steps=args.steps,
+        caption_dir=args.caption_dir,
     )
