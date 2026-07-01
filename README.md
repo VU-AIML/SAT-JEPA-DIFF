@@ -208,6 +208,17 @@ booktitle={4th ICLR Workshop on Machine Learning for Remote Sensing (Main Track)
 year={2026},
 url={https://openreview.net/forum?id=WBHfQLbgZR}
 }
+
+@ARTICLE{11589351,
+  author={Kömürcü, Kürşat and Petkevicius, Linas},
+  journal={IEEE Geoscience and Remote Sensing Letters}, 
+  title={Sat-JEPA-Diff: Caption-Guided Zero-RGB Satellite Image Forecasting via Self-Supervised Diffusion}, 
+  year={2026},
+  volume={},
+  number={},
+  pages={1-1},
+  doi={10.1109/LGRS.2026.3708464}
+}
 ```
 
 ---
