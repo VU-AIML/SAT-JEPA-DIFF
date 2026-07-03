@@ -312,12 +312,15 @@ src/
 ## Citation
 
 ```bibtex
-@article{komurcu2026satjepadiff_caption,
-  title={Sat-{JEPA}-Diff: Caption-Guided Zero-{RGB} Satellite Image Forecasting via Self-Supervised Diffusion},
-  author={K{\"o}m{\"u}rc{\"u}, K{\"u}r{\c{s}}at and Petkevicius, Linas},
-  journal={IEEE Geoscience and Remote Sensing Letters},
+@ARTICLE{11589351,
+  author={Kömürcü, Kürşat and Petkevicius, Linas},
+  journal={IEEE Geoscience and Remote Sensing Letters}, 
+  title={Sat-JEPA-Diff: Caption-Guided Zero-RGB Satellite Image Forecasting via Self-Supervised Diffusion}, 
   year={2026},
-  note={Submitted}
+  volume={},
+  number={},
+  pages={1-1},
+  doi={10.1109/LGRS.2026.3708464}
 }
 
 @inproceedings{komurcu2026satjepadiff,
