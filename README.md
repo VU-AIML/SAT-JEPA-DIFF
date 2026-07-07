@@ -4,7 +4,7 @@
 
 *Submitted to IEEE Geoscience and Remote Sensing Letters (GRSL)*
 
-[![Paper](https://ieeexplore.ieee.org/abstract/document/11589351)
+[![Paper](https://img.shields.io/badge/Paper-IEEE-blue)](https://ieeexplore.ieee.org/abstract/document/11589351)
 [![Workshop](https://img.shields.io/badge/Workshop-ICLR%202026%20ML4RS-purple)](https://openreview.net/forum?id=WBHfQLbgZR)
 [![HF Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-yellow)](https://huggingface.co/kursatkomurcu/SAT-JEPA-DIFF-Caption-Guided)
 [![Dataset](https://img.shields.io/badge/Zenodo-Dataset%20%26%20Model-orange)](https://doi.org/10.5281/zenodo.18868643)
