@@ -317,9 +317,9 @@ src/
   journal={IEEE Geoscience and Remote Sensing Letters}, 
   title={Sat-JEPA-Diff: Caption-Guided Zero-RGB Satellite Image Forecasting via Self-Supervised Diffusion}, 
   year={2026},
-  volume={},
+  volume={23},
   number={},
-  pages={1-1},
+  pages={6014405-6014405},
   doi={10.1109/LGRS.2026.3708464}
 }
 
